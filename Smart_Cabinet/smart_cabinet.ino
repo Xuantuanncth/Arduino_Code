@@ -453,10 +453,12 @@ void loop() {
   }
   
   if((statusOfDay.M_status == 1) && (statusOfDay.N_status == 1) && (statusOfDay.E_status == 1)){
-    statusOfDay.M_status = 0;
-    statusOfDay.N_status = 0;
-    statusOfDay.E_status = 0;
-    Initial_Motor();
+    if(CompareSetupTime(timeSetup.E_hour, timeSetup.E_minute+2)){
+        statusOfDay.M_status = 0;
+        statusOfDay.N_status = 0;
+        statusOfDay.E_status = 0;
+        Initial_Motor();
+    } 
   }
  /**
  * Kiem tra xem thuoc con hay khong
