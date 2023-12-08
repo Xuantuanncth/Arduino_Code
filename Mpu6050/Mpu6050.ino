@@ -13,6 +13,7 @@
 #include <Wire.h>								
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
+// #include <SimpleKalmanFilter.h>
 
 /**
  * Define pinout interface
@@ -70,6 +71,7 @@ BlynkTimer timer;
 Adafruit_MPU6050 mpu;
 
 WidgetLCD lcd(V3);
+// SimpleKalmanFilter simpleKalmanFilter(2, 2, 0.01);
 
 /*Function gui du lieu len blynk*/
 void detectStatus()
