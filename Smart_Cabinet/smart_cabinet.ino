@@ -263,6 +263,9 @@ void CheckStillMedicine(){
       if((digitalRead(Check_Thuoc) == 0) && (counter < 3)){
         notification(2);
         counter++;
+      } else if((digitalRead(Check_Thuoc) == 0) && (counter == 2)){
+        sendSMS();
+        call();
       } else {
         statusOfDay.M_status = 2;
         counter = 0;
@@ -274,6 +277,9 @@ void CheckStillMedicine(){
       if((digitalRead(Check_Thuoc) == 0) && (counter < 3)){
         notification(2);
         counter++;
+      } else if((digitalRead(Check_Thuoc) == 0) && (counter == 2)){
+        sendSMS();
+        call();
       } else {
         statusOfDay.N_status = 2;
         counter = 0;
@@ -285,6 +291,9 @@ void CheckStillMedicine(){
       if((digitalRead(Check_Thuoc) == 0) && (counter < 3)){
         notification(2);
         counter++;
+      } else if((digitalRead(Check_Thuoc) == 0) && (counter == 2)){
+        sendSMS();
+        call();
       } else {
         statusOfDay.E_status = 2;
         counter = 0;
@@ -331,6 +340,15 @@ bool CompareSetupTime(unsigned char thisHour, unsigned char thisMinute){
     status = true;
   }
   return status;
+}
+
+void call(){
+  char phoneNumber[20] = "0989208486";
+  SimSerial.begin(9600);
+  SimSerial.println("AT");
+  delay(500);
+  SimSerial.println(String("ATD+ ")+String(phoneNumber));
+  delay(500);
 }
 
 void sendSMS(){
