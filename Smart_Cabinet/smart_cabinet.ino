@@ -470,8 +470,8 @@ void loop() {
     Motor_goToNextDay(E_dir,E_step,E_button);
   }
   
-  if((statusOfDay.M_status == 1) && (statusOfDay.N_status == 1) && (statusOfDay.E_status == 1)){
-    if(CompareSetupTime(timeSetup.E_hour, timeSetup.E_minute+2)){
+  if((statusOfDay.E_status == 1) || (statusOfDay.E_status == 2)){
+    if(CompareSetupTime(timeSetup.E_hour, timeSetup.E_minute+1)){
         statusOfDay.M_status = 0;
         statusOfDay.N_status = 0;
         statusOfDay.E_status = 0;
