@@ -5,10 +5,13 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <WiFi.h>
+#include <WiFiUdp.h>
+#include <time.h>
 #include <Preferences.h>
 #include "SinricPro.h"
 #include "SinricProSwitch.h"
 #include "RTClib.h"
+#include <Arduino.h>
 /*-------------------------------------------------------------------------------*/
 
 /*--------------------------------Define variable--------------------------------*/
@@ -72,6 +75,7 @@
 unsigned char reading_button(unsigned char button);
 void motor_speed(unsigned char speed);
 void change_level_speed(void);
+void motor_swing_task(void *pvParameters);
 /*--------------------------------------------------------------------------------*/
 
 /*---------------------------- Global variable ----------------------------------*/
@@ -79,11 +83,13 @@ DHT dht(dht11_pin,dht_type);
 Adafruit_SSD1306 display(screen_width,screen_height,&Wire, oled_reset);
 Preferences preferences;
 RTC_DS3231 rtc;
+WiFiUDP udp;
+TaskHandle_t Swing_stepper_task_handle;
 
 unsigned char level_speed = Off_Speed;
 unsigned char mode = 0;
 unsigned char auto_mode = 0;
-unsigned char swing_mode = 0;
+volatile bool swing_mode = false;
 unsigned char start_hour = 0;
 unsigned char start_minute = 0;
 unsigned char stop_hour = 0;
@@ -98,6 +104,9 @@ const char *default_SSID = "Esp32";
 const char *default_PASS = "12345678"; //0905772081
 
 bool wifiConnected = false;
+const char* ntpServer = "pool.ntp.org";
+const int NTP_PACKET_SIZE = 48; 
+byte packetBuffer[NTP_PACKET_SIZE]; 
 
 int stepperSequence[8][4] = {
   {1, 0, 0, 1},  // Step 1
@@ -166,7 +175,10 @@ void setup() {
 
     if(wifiConnected){
         setupSinricPro();
+        configTime(7 * 3600, 0, ntpServer);
     }
+
+    xTaskCreatePinnedToCore(motor_swing_task, "motor_swing_task", 1000, NULL, 1, &Swing_stepper_task_handle, 0);
     
 }
 
@@ -427,14 +439,25 @@ bool onPowerState(const String &deviceId, bool &state) {
  */
 void automatic_mode(){
     Serial.println("Automatic mode");
-    DateTime now = rtc.now();
-    current_hour = now.hour();
-    current_minute = now.minute();
+    if(wifiConnected){
+        struct tm timeInfo;
+        if (getLocalTime(&timeInfo)) {
+            current_hour = timeInfo.tm_hour;
+            current_minute = timeInfo.tm_min;
+        }
+    } else {
+        Serial.println("Failed to obtain time information from the NTP server");
+        return;
+        DateTime now = rtc.now();
+        current_hour = now.hour();
+        current_minute = now.minute();
+    }
     bool run_device = false;
     current_temperature = dht.readTemperature();
-    Serial.print(now.hour(), DEC);
+    Serial.print("Current time: ");
+    Serial.print(current_hour);
     Serial.print(':');
-    Serial.println(now.minute(), DEC);
+    Serial.println(current_minute);
     /*Check in range of time setup*/
     if(start_hour == 0 && stop_hour == 0 && start_minute == 0 && stop_minute == 0){
         Serial.println("Time range is not set");
@@ -445,7 +468,10 @@ void automatic_mode(){
         Serial.println("Temperature lower than temperature configured");
         return;
     }
-    if((start_hour <= current_hour) && (stop_hour >= current_hour))
+    /*
+      Settime in a day
+    */
+    if((start_hour <= current_hour) && (stop_hour >= current_hour)) 
     {
         if((start_minute <= current_minute) && (stop_minute >= current_minute))
         {
@@ -454,6 +480,7 @@ void automatic_mode(){
         }
     }
     if(run_device){
+        level_speed=Max_Speed;
         motor_speed(Max_Speed);
         swing_config(true);
     } else {
@@ -831,9 +858,8 @@ void swing_config(unsigned char swing){
         if(reading_button(btn2)==1){
             swing_mode = (swing_mode == true) ? false: true;
         }
-        if(swing_mode == true){
-            motor_swing();
-        }
+    } else {
+      swing_mode = false;
     }
 }
 
@@ -847,53 +873,45 @@ unsigned char reading_button(unsigned char button){
   return state;
 }
 
-void motor_swing(){
-    Serial.println("Motor swing");
-      // Move forward 1/3 of a revolution
-    unsigned long currentMillis = millis();
+void motor_swing_task(void *pvParameters) {
+    while(true){
+        if(swing_mode == true){
+            Serial.println("Motor swing");
+            // Move forward 1/3 of a revolution
+            for (int i = 0; i < stepsToMove; i++) {
+                if(swing_mode){
+                    for (int step = 0; step < 8; step++) {
+                    digitalWrite(stepper_pin1, stepperSequence[step][0]);
+                    digitalWrite(stepper_pin2, stepperSequence[step][1]);
+                    digitalWrite(stepper_pin3, stepperSequence[step][2]);
+                    digitalWrite(stepper_pin4, stepperSequence[step][3]);
+                    delay(10);  // Small delay between steps to control speed
+                    }
+                }else
+                {
+                    break;
+                }
+            }
 
-    // Move forward 1/3 of a revolution (stepsToMove)
-    if (currentMillis - previousMillis >= interval) {
-        previousMillis = currentMillis;
-        // Update step sequence
-        digitalWrite(stepper_pin1, stepperSequence[currentStep][0]);
-        digitalWrite(stepper_pin2, stepperSequence[currentStep][1]);
-        digitalWrite(stepper_pin3, stepperSequence[currentStep][2]);
-        digitalWrite(stepper_pin4, stepperSequence[currentStep][3]);
+            delay(500);  // Wait 1 second before returning
 
-        currentStep++;  // Move to next step
-        if (currentStep >= 8) currentStep = 0;  // Loop back to the first step
-
-        stepsToMove--;  // Decrease the number of steps to move
-
-        if (stepsToMove <= 0) {
-        delay(1000);  // Wait 1 second before moving in the opposite direction
-        stepsToMove = 100;  // Reset steps to move for the return journey
-        currentStep = 0;  // Reset step sequence for backward movement
+            // Move backward 1/3 of a revolution (back to original position)
+            for (int i = 0; i < stepsToMove; i++) {
+                if(swing_mode){
+                    for (int step = 7; step >= 0; step--) {
+                    digitalWrite(stepper_pin1, stepperSequence[step][0]);
+                    digitalWrite(stepper_pin2, stepperSequence[step][1]);
+                    digitalWrite(stepper_pin3, stepperSequence[step][2]);
+                    digitalWrite(stepper_pin4, stepperSequence[step][3]);
+                    delay(10);  // Small delay between steps to control speed
+                    }
+                }else{
+                    break;
+                }
+            }
+            delay(500);
         }
-    }
-
-    // Move backward 1/3 of a revolution (back to original position)
-    if (stepsToMove <= 0) {
-        // Reverse the step sequence (moving backward)
-        if (currentMillis - previousMillis >= interval) {
-        previousMillis = currentMillis;
-        // Update step sequence for reverse movement
-        currentStep--;
-        if (currentStep < 0) currentStep = 7;  // Loop back to the last step
-
-        digitalWrite(stepper_pin1, stepperSequence[currentStep][0]);
-        digitalWrite(stepper_pin2, stepperSequence[currentStep][1]);
-        digitalWrite(stepper_pin3, stepperSequence[currentStep][2]);
-        digitalWrite(stepper_pin4, stepperSequence[currentStep][3]);
-
-        stepsToMove++;  // Increase the steps as we move backward
-
-        if (stepsToMove >= 100) {  // After returning, reset for next cycle
-            delay(1000);  // Wait 1 second before repeating the process
-            stepsToMove = 100;
-        }
-        }
+        vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
 
