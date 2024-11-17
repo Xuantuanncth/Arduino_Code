@@ -4,8 +4,14 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <WiFi.h>
+#include <Preferences.h>
+#include "SinricPro.h"
+#include "SinricProSwitch.h"
+#include "RTClib.h"
 /*-------------------------------------------------------------------------------*/
 
+/*--------------------------------Define variable--------------------------------*/
 #define btn1 23
 #define btn2 19
 #define btn3 18
@@ -46,12 +52,21 @@
 #define mode_setting_stop_time 3
 #define mode_setting_temperature 4
 
+#define mode_wifi_waiting 0
+#define mode_wifi_connected 1
+#define mode_wifi_failed 2
+#define mode_wifi_setting 3
+
 #define level_speed_increase 1
+/*Sinric pro API key*/
+// #define app_key "37fae113-1bd0-490f-83dd-08c0f2a335ed"
+// #define app_secret "4aeaf90f-5a26-4b3b-bc43-7007df2a9d03-8738f620-0989-454a-adb4-aaa224ac71d0"
+// #define app_device_id "67385a28de70d3c324bd0333"
 
-
-#define hour_format 24
-#define minute_format 60
-
+#define app_key "b965202f-0ba0-44e2-aee1-6093d093fc55"
+#define app_secret "e9c5f7f3-c6df-4f87-a224-3d1212d5fd5e-bab95674-fdd6-4a15-8e43-c4ee5cb71518"
+#define app_device_id "67386095de70d3c324bd0923"
+/*--------------------------------------------------------------------------------*/
 
 /*--------------------------- Define prototype function --------------------------*/
 unsigned char reading_button(unsigned char button);
@@ -60,8 +75,10 @@ void change_level_speed(void);
 /*--------------------------------------------------------------------------------*/
 
 /*---------------------------- Global variable ----------------------------------*/
-DHT dht(dht11_pin,dht_type);
+DHT dht(dht11_pin,dht_type); 
 Adafruit_SSD1306 display(screen_width,screen_height,&Wire, oled_reset);
+Preferences preferences;
+RTC_DS3231 rtc;
 
 unsigned char level_speed = Off_Speed;
 unsigned char mode = 0;
@@ -76,6 +93,26 @@ unsigned char temperature_min = 20;
 unsigned char current_temperature = 0;
 unsigned char current_hour = 0;
 unsigned char current_minute = 0;
+
+const char *default_SSID = "Esp32";
+const char *default_PASS = "12345678"; //0905772081
+
+bool wifiConnected = false;
+
+int stepperSequence[8][4] = {
+  {1, 0, 0, 1},  // Step 1
+  {1, 0, 0, 0},  // Step 2
+  {1, 1, 0, 0},  // Step 3
+  {0, 1, 0, 0},  // Step 4
+  {0, 1, 1, 0},  // Step 5
+  {0, 0, 1, 0},  // Step 6
+  {0, 0, 1, 1},  // Step 7
+  {0, 0, 0, 1}   // Step 8
+};
+int stepsToMove = 100;
+int currentStep = 0;    // To keep track of the current step in the sequence
+unsigned long previousMillis = 0;  // Stores the last time the step was updated
+const long interval = 10;  // Time between each step (milliseconds)
 /*-------------------------------------------------------------------------------*/
 
 
@@ -93,6 +130,11 @@ void setup() {
     pinMode(motor_pin2, OUTPUT);
     pinMode(motor_pin1, OUTPUT);
 
+    pinMode(stepper_pin1, OUTPUT);
+    pinMode(stepper_pin2, OUTPUT);
+    pinMode(stepper_pin3, OUTPUT);
+    pinMode(stepper_pin4, OUTPUT);
+
     /*Initial module DHT 11*/
     dht.begin();
 
@@ -100,10 +142,35 @@ void setup() {
         Serial.println(F("SSD1306 allocation failed"));
     }
 
+    String ssid, password;
+    if (loadWiFiCredentials(ssid, password)) {
+        Serial.println("WiFi connector loaded from preferences.");
+        connectToWiFi( ssid.c_str(),password.c_str());
+    }
+    if(!wifiConnected){
+        Serial.println("WiFi connect with default SSID and password.");
+        connectToWiFi(default_SSID,default_PASS);
+    }
+
+    if(!wifiConnected){
+        selectNewWifi();
+    }
+
+    if (! rtc.begin()) {
+      Serial.println("Couldn't find RTC");
+    }
+    if (rtc.lostPower()) {
+      Serial.println("RTC lost power, let's set the time!");
+      rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    }
+
+    if(wifiConnected){
+        setupSinricPro();
+    }
+    
 }
 
 void loop() {
-
     if(reading_button(btn3) == 1){
         if(mode >= mode_setting_temperature)
         {
@@ -122,7 +189,10 @@ void loop() {
                 automatic_mode();
             } else {
                 change_level_speed();
-                swing_config();
+                swing_config(true);
+                if(wifiConnected){
+                    SinricPro.handle();
+                }
             }
             break;
         case mode_automatic:
@@ -140,10 +210,231 @@ void loop() {
     }
 }
 
+
+void connectToWiFi(const char* ssid, const char* password) {
+  WiFi.begin(ssid, password);
+
+  unsigned long startTime = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startTime < 10000) { // Timeout 10s
+    delay(500);
+    displayWifiSettings(mode_wifi_waiting, setting_ok);
+    Serial.print(".");
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnected = true;
+    Serial.println("\nWiFi Connected!");
+    displayWifiSettings(mode_wifi_connected, setting_ok);
+    delay(2000);
+  } else {
+    wifiConnected = false;
+    Serial.println("\nWiFi Connection Failed!");
+  }
+}
+
+void displayWifiSettings(unsigned char mode_wifi, unsigned char setting_mode) {
+    display.clearDisplay();
+
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(15, 0);  
+    display.print("Connect to WiFi");
+    display.setTextSize(2);
+    display.setCursor(15, 15);
+    if(mode_wifi == mode_wifi_waiting) {
+        display.print("...");
+    } else if (mode_wifi == mode_wifi_connected) {
+        display.print("Connected");
+    } else if (mode_wifi == mode_wifi_failed) {
+        display.print("Failed");
+
+        display.setTextSize(1);
+        display.setCursor(10, 40);
+        display.print("Select new wifi?");
+        display.setCursor(10,55);
+        display.print("OK");
+        display.setCursor(80, 55);
+        display.print("Cancel");
+
+        if (setting_mode == setting_ok) {
+            display.setCursor(0, 55);
+            display.print(">");
+        } else {
+            display.setCursor(70, 55);
+            display.print(">");
+        }
+    } else {
+        display.setTextSize(1);
+        display.setCursor(0, 15);
+        display.print("AP: ESP32_Config");
+        display.setCursor(0, 25);
+        display.print("Pass: 12345678");
+        display.setCursor(0, 35);
+        display.print("http://192.168.4.1");
+
+    }
+    display.display();
+}
+
+void selectNewWifi() {
+    unsigned char _temp_mode = 0;
+    bool is_get_wifi = false;
+    while(true){
+        if(reading_button(btn3) == 1) {
+            _temp_mode = (_temp_mode >= 1) ? 0: _temp_mode+1;
+        }
+        if(_temp_mode == 0)
+        {
+            displayWifiSettings(mode_wifi_failed, setting_ok);
+            if(reading_button(btn1) == 1){
+                is_get_wifi = true;
+                break;
+            }
+        } 
+        else
+        {
+            displayWifiSettings(mode_wifi_failed, setting_cancel);
+            if(reading_button(btn1) == 1){
+                break;
+            }
+        }
+    }
+    if(is_get_wifi){
+        createAccessPoint();
+    }
+}
+
+void createAccessPoint() {
+    const char* apSSID = "ESP32_Config";
+    const char* apPassword = "12345678";
+
+    WiFi.softAP(apSSID, apPassword);
+    Serial.println("Access Point Created");
+    displayWifiSettings(mode_wifi_setting, setting_ok);
+
+    WiFiServer server(80);
+    server.begin();
+
+    while (true) {
+        WiFiClient client = server.available();
+        if (client) {
+            Serial.println("New Client Connected");
+            String request = client.readStringUntil('\r');
+            client.flush();
+
+            if (request.indexOf("GET /") >= 0) {
+                String html = "<html><body>"
+                                "<h1>WiFi Setup</h1>"
+                                "<form method='GET' action='/setwifi'>"
+                                "SSID: <input type='text' name='ssid'><br>"
+                                "Password: <input type='text' name='password'><br>"
+                                "<input type='submit' value='Submit'>"
+                                "</form>"
+                                "<a href='/cancel'><button>Cancel</button></a>"
+                                "</body></html>";
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-type:text/html");
+                client.println();
+                client.println(html);
+                client.println();
+            }
+
+            if (request.indexOf("GET /setwifi") >= 0) {
+                int ssidIndex = request.indexOf("ssid=") + 5;
+                int passIndex = request.indexOf("password=") + 9;
+
+                String newSSID = request.substring(ssidIndex, request.indexOf('&', ssidIndex));
+                String newPassword = request.substring(passIndex, request.indexOf(' ', passIndex));
+
+                newSSID.replace("+", " ");
+                newSSID.replace("%20", " "); // Thay thế khoảng trắng
+                newPassword.replace("%20", " ");
+
+                Serial.println("New WiFi Credentials:");
+                Serial.println("SSID: " + newSSID);
+                Serial.println("Password: " + newPassword);
+
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-type:text/plain");
+                client.println();
+                client.println("Trying to connect...");
+                client.println();
+
+                connectToWiFi(newSSID.c_str(), newPassword.c_str());
+                if (wifiConnected) {
+                    saveWiFiCredentials(newSSID, newPassword);
+                    break;
+                } else {
+                    displayWifiSettings(mode_wifi_failed, setting_ok);
+                    break;
+                }
+            }
+            if (request.indexOf("GET /cancel") >= 0) {
+                break;
+            }
+        }
+    }
+}
+
+void saveWiFiCredentials(String ssid, String password) {
+    preferences.begin("wifi", false);  
+    preferences.putString("ssid", ssid);
+    preferences.putString("password", password);
+    preferences.end(); 
+    Serial.println("WiFi credentials saved!");
+}
+
+bool loadWiFiCredentials(String &ssid, String &password) {
+    preferences.begin("wifi", true); 
+    ssid = preferences.getString("ssid", "");  
+    password = preferences.getString("password", "");
+    Serial.println("WiFi of Credentials loaded");
+    Serial.println("SSID: " + ssid);
+    Serial.println("Password: " + password);
+    preferences.end();
+    return ssid.length() > 0 && password.length() > 0; 
+}
+
+void setupSinricPro() {
+  // add devices and callbacks to SinricPro
+  SinricProSwitch& mySwitch = SinricPro[app_device_id];
+  mySwitch.onPowerState(onPowerState);
+
+  // setup SinricPro
+  SinricPro.onConnected([](){ Serial.printf("Connected to SinricPro\r\n"); }); 
+  SinricPro.onDisconnected([](){ Serial.printf("Disconnected from SinricPro\r\n"); });
+  SinricPro.begin(app_key, app_secret);
+}
+
+bool onPowerState(const String &deviceId, bool &state) {
+  Serial.printf("Device %s turned %s\n", deviceId.c_str(), state ? "ON" : "OFF");
+  if(state) {
+    level_speed = Max_Speed;
+  } else {
+    level_speed = Off_Speed;
+  }
+  return true; 
+}
+
+/**
+ * Automatically controls the fan based on the current temperature and time settings.
+ * 
+ * This function checks if the current temperature is within the configured temperature range and if the current time is within the configured start and stop time. If both conditions are met, the function sets the motor speed to the maximum speed and activates the swing mode.
+ * 
+ * If the time range is not set (all values are 0), the function prints a message and disables the automatic mode.
+ * 
+ * If the current temperature is lower than the configured maximum temperature, the function returns without taking any action.
+ */
 void automatic_mode(){
     Serial.println("Automatic mode");
+    DateTime now = rtc.now();
+    current_hour = now.hour();
+    current_minute = now.minute();
     bool run_device = false;
     current_temperature = dht.readTemperature();
+    Serial.print(now.hour(), DEC);
+    Serial.print(':');
+    Serial.println(now.minute(), DEC);
     /*Check in range of time setup*/
     if(start_hour == 0 && stop_hour == 0 && start_minute == 0 && stop_minute == 0){
         Serial.println("Time range is not set");
@@ -159,14 +450,32 @@ void automatic_mode(){
         if((start_minute <= current_minute) && (stop_minute >= current_minute))
         {
             run_device = true;
+            swing_mode = true;
         }
     }
     if(run_device){
         motor_speed(Max_Speed);
-        motor_swing();
+        swing_config(true);
+    } else {
+        motor_speed(Off_Speed);
+        swing_config(false);
     }
 }
 
+/**
+ * Configures the start or stop time settings for the fan control system's automatic mode.
+ * 
+ * This function handles the user interface for setting the start or stop time for the automatic mode. It displays a menu with options to adjust the hour and minute, as well as OK and Cancel options.
+ * 
+ * The function runs in a loop until the user makes a selection:
+ * - Button 3 toggles between the hour, minute, OK, and Cancel options
+ * - Button 1 increases the selected value (hour or minute)
+ * - Button 2 decreases the selected value (hour or minute)
+ * - Selecting OK saves the configured time and moves to the next setting (start time -> stop time, or stop time -> temperature)
+ * - Selecting Cancel exits the time setting mode and returns to manual mode
+ * 
+ * @param cfg_mode The configuration mode, either start_time or stop_time, to set the time for.
+ */
 void setting_time_mode(unsigned int cfg_mode) {
     Serial.println("Setting time mode");
     unsigned char _mode_temp = 0;
@@ -242,6 +551,26 @@ void setting_time_mode(unsigned int cfg_mode) {
     }
 }
 
+/**
+ * Configures the automatic mode settings for the fan control system.
+ * 
+ * This function handles the user interface for enabling/disabling automatic mode.
+ * It displays a menu with OK/Cancel options and processes button inputs to:
+ * - Enable automatic mode and proceed to start time settings when OK is selected
+ * - Disable automatic mode and return to manual mode when Cancel is selected
+ * 
+ * The function runs in a loop until the user makes a selection:
+ * - Button 3 toggles between OK and Cancel options
+ * - Button 1 confirms the current selection
+ * 
+ * When OK is selected:
+ * - Sets auto_mode to 1 (enabled)
+ * - Changes mode to mode_setting_start_time
+ * 
+ * When Cancel is selected:
+ * - Sets auto_mode to 0 (disabled) 
+ * - Changes mode back to mode_manual
+ */
 void setting_automatic_mode(){
     Serial.println("Automatic mode");
     unsigned char _temp_mode = 0;
@@ -484,13 +813,6 @@ void displaySettingTime(unsigned char setting_time, unsigned char setting_mode) 
     display.display();
 }
 
-
-void temperature_reading()
-{
-    float h = dht.readHumidity();
-    float t = dht.readTemperature();
-}
-
 void change_level_speed()
 {
   unsigned char button_press = reading_button(btn1);
@@ -504,10 +826,12 @@ void change_level_speed()
   motor_speed(level_speed);
 }
 
-void swing_config(){
-    if(reading_button(btn2)==1){
-        if(!swing_mode)
-        {
+void swing_config(unsigned char swing){
+    if(true == swing){
+        if(reading_button(btn2)==1){
+            swing_mode = (swing_mode == true) ? false: true;
+        }
+        if(swing_mode == true){
             motor_swing();
         }
     }
@@ -525,6 +849,52 @@ unsigned char reading_button(unsigned char button){
 
 void motor_swing(){
     Serial.println("Motor swing");
+      // Move forward 1/3 of a revolution
+    unsigned long currentMillis = millis();
+
+    // Move forward 1/3 of a revolution (stepsToMove)
+    if (currentMillis - previousMillis >= interval) {
+        previousMillis = currentMillis;
+        // Update step sequence
+        digitalWrite(stepper_pin1, stepperSequence[currentStep][0]);
+        digitalWrite(stepper_pin2, stepperSequence[currentStep][1]);
+        digitalWrite(stepper_pin3, stepperSequence[currentStep][2]);
+        digitalWrite(stepper_pin4, stepperSequence[currentStep][3]);
+
+        currentStep++;  // Move to next step
+        if (currentStep >= 8) currentStep = 0;  // Loop back to the first step
+
+        stepsToMove--;  // Decrease the number of steps to move
+
+        if (stepsToMove <= 0) {
+        delay(1000);  // Wait 1 second before moving in the opposite direction
+        stepsToMove = 100;  // Reset steps to move for the return journey
+        currentStep = 0;  // Reset step sequence for backward movement
+        }
+    }
+
+    // Move backward 1/3 of a revolution (back to original position)
+    if (stepsToMove <= 0) {
+        // Reverse the step sequence (moving backward)
+        if (currentMillis - previousMillis >= interval) {
+        previousMillis = currentMillis;
+        // Update step sequence for reverse movement
+        currentStep--;
+        if (currentStep < 0) currentStep = 7;  // Loop back to the last step
+
+        digitalWrite(stepper_pin1, stepperSequence[currentStep][0]);
+        digitalWrite(stepper_pin2, stepperSequence[currentStep][1]);
+        digitalWrite(stepper_pin3, stepperSequence[currentStep][2]);
+        digitalWrite(stepper_pin4, stepperSequence[currentStep][3]);
+
+        stepsToMove++;  // Increase the steps as we move backward
+
+        if (stepsToMove >= 100) {  // After returning, reset for next cycle
+            delay(1000);  // Wait 1 second before repeating the process
+            stepsToMove = 100;
+        }
+        }
+    }
 }
 
 void motor_speed(unsigned char speed){
