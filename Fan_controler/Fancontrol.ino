@@ -359,7 +359,7 @@ void createAccessPoint() {
                 String newPassword = request.substring(passIndex, request.indexOf(' ', passIndex));
 
                 newSSID.replace("+", " ");
-                newSSID.replace("%20", " "); // Thay thế khoảng trắng
+                newSSID.replace("%20", " "); 
                 newPassword.replace("%20", " ");
 
                 Serial.println("New WiFi Credentials:");
@@ -439,20 +439,26 @@ bool onPowerState(const String &deviceId, bool &state) {
  */
 void automatic_mode(){
     Serial.println("Automatic mode");
+    bool run_device = false;
+    int range = 0;
+
     if(wifiConnected){
         struct tm timeInfo;
         if (getLocalTime(&timeInfo)) {
             current_hour = timeInfo.tm_hour;
             current_minute = timeInfo.tm_min;
         }
-    } else {
-        Serial.println("Failed to obtain time information from the NTP server");
-        return;
+        else
+        {
+          Serial.println("Failed to get date time from internet");
+        }
+    } 
+    else 
+    {
         DateTime now = rtc.now();
         current_hour = now.hour();
         current_minute = now.minute();
     }
-    bool run_device = false;
     current_temperature = dht.readTemperature();
     Serial.print("Current time: ");
     Serial.print(current_hour);
@@ -464,7 +470,7 @@ void automatic_mode(){
         auto_mode = 0;
         return;
     }
-    if(current_temperature <= temperature_max){
+    if((current_temperature > temperature_max) || (current_temperature < temperature_min)){
         Serial.println("Temperature lower than temperature configured");
         return;
     }
@@ -480,8 +486,20 @@ void automatic_mode(){
         }
     }
     if(run_device){
-        level_speed=Max_Speed;
-        motor_speed(Max_Speed);
+        range = (temperature_max - temperature_min)/3;
+        if(current_temperature < temperature_min + range)
+        {
+          level_speed = Min_Speed;
+        }
+        else if(((temperature_min + range) <= current_temperature)&&(current_temperature < (temperature_max + range)))
+        {
+          level_speed = Normal_Speed
+        } 
+        else if(current_temperature > temperature_max - range)
+        {
+          level_speed=Max_Speed;
+        }
+        motor_speed(level_speed);
         swing_config(true);
     } else {
         motor_speed(Off_Speed);
@@ -647,18 +665,18 @@ void setting_temperature_mode(){
                 temperature_max = (temperature_max <= 20)? 45:temperature_max -1;
             }
         } 
-        // else if(_temp_mode == 1)
-        // {
-        //     displaySettingTemperature(1);
-        //     if(reading_button(btn1) == 1)
-        //     {
-        //         temperature_min = (temperature_min >= temperature_max)? temperature_max - 1:temperature_min +1;
-        //     }
-        //     if(reading_button(btn2) == 1)
-        //     {
-        //         temperature_min = (temperature_min <= 0)? temperature_max - 1:temperature_min -1;
-        //     }
-        // }
+        else if(_temp_mode == 1)
+        {
+            displaySettingTemperature(1);
+            if(reading_button(btn1) == 1)
+            {
+                temperature_min = (temperature_min >= temperature_max)? temperature_max - 3: temperature_min +1;
+            }
+            if(reading_button(btn2) == 1)
+            {
+                temperature_min = (temperature_min <= 0)? temperature_max - 1 : temperature_min -1;
+            }
+        }
         else if (_temp_mode == 1)
         {
             displaySettingTemperature(setting_ok);
@@ -719,9 +737,9 @@ void displaySettingTemperature(unsigned char setting_mode){
     display.print("MAX: ");
     display.print(temperature_max);
 
-    // display.setCursor(15, 35);
-    // display.print("MIN: ");
-    // display.print(temperature_min);
+    display.setCursor(15, 35);
+    display.print("MIN: ");
+    display.print(temperature_min);
 
     display.setTextSize(1);
     display.setCursor(10,55);
@@ -733,10 +751,10 @@ void displaySettingTemperature(unsigned char setting_mode){
       display.setCursor(0, 15);
       display.print(">");
     } 
-    // else if (setting_mode == 1) {
-    //   display.setCursor(0, 35);
-    //   display.print(">");
-    // } 
+    else if (setting_mode == 1) {
+      display.setCursor(0, 35);
+      display.print(">");
+    } 
     else if (setting_mode == setting_ok) {
         display.setCursor(0, 55);
         display.print(">");
