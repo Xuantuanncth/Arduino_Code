@@ -493,11 +493,11 @@ void automatic_mode(){
         }
         else if(((temperature_min + range) <= current_temperature)&&(current_temperature < (temperature_max + range)))
         {
-          level_speed = Normal_Speed
+          level_speed = Normal_Speed;
         } 
         else if(current_temperature > temperature_max - range)
         {
-          level_speed=Max_Speed;
+          level_speed = Max_Speed;
         }
         motor_speed(level_speed);
         swing_config(true);
