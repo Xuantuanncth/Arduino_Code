@@ -195,6 +195,37 @@ void send_data_to_application()
   Serial.print(message);
 }
 
+String read_data_from_application(void)
+{
+    String data = "";
+    char startChar = '*';
+    char endChar = '#';
+    bool isReceived = false;
+    unsigned long startTime = millis();
+
+    while(millis() - startTime < 5000) // 10 seconds timeout
+    {
+        if(mySerial.available())
+        {
+            char incomingByte = mySerial.read();
+            if(incomingByte == startChar)
+            {
+                isReceived = true;
+                data = "";
+            }
+            else if(incomingByte == endChar && isReceived)
+            {
+                break;
+            }
+            else if(isReceived)
+            {
+                data += incomingByte;
+            }
+        }
+    }
+    return data;
+}
+
 void setting_menu_mode()
 {
     unsigned char _mode_temp = 0;
@@ -496,6 +527,18 @@ void display_welcome(unsigned char mode){
     display.display();
 }
 
+void display_name_employee(String name){
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(WHITE);
+    display.setCursor(15,0);
+    display.print("Employee");
+    display.setTextSize(1);
+    display.setCursor(10,25);
+    display.print(name);
+    display.display();
+}
+
 void display_log(const uint8_t *logo) {
     display.clearDisplay();
 
@@ -608,9 +651,13 @@ unsigned char detect_fingerprint()
 
 void check_fingerprint(){
     unsigned char is_fingerprint = detect_fingerprint();
+    String employee_name = "";
     if(is_fingerprint == finger_detect_success)
     {   
         send_data_to_application();
+        employee_name = read_data_from_application();
+        display_name_employee(employee_name);
+        delay(1000);
         display_log(success_logo);
         notification(notif_success);
     } 
@@ -1066,23 +1113,31 @@ void saveFingerprintID(int id) {
     int index = countSavedIDs();
     int address = index * sizeof(int); 
     if (address + sizeof(int) > eeprom_size) {
-        Serial.println("EEPROM storage is full.");
+        if(debug_app)
+        {
+            Serial.println("EEPROM storage is full.");
+        }
         return;
     }
     EEPROM.put(address, id); 
-    EEPROM.commit();        
-    Serial.print("Fingerprint ID saved at index ");
-    Serial.println(index);
+    EEPROM.commit();
+    if(debug_app)
+    {
+        Serial.print("Fingerprint ID saved at index ");
+        Serial.println(index);
+    }        
 }
 
 int readFingerprintID(int index) {
     int address = index * sizeof(int); 
     int id;
     EEPROM.get(address, id); 
-    Serial.print("Fingerprint ID at index ");
-    Serial.print(index);
-    Serial.print(": ");
-    Serial.println(id);
+    if(debug_app){    
+        Serial.print("Fingerprint ID at index ");
+        Serial.print(index);
+        Serial.print(": ");
+        Serial.println(id);
+    }
     return id;
 }
 
@@ -1092,8 +1147,11 @@ int countSavedIDs() {
         int id;
         EEPROM.get(i * sizeof(int), id);
         if (id > 0 && id != 0xFFFF) {
-            Serial.print("countSavedIDs: ");
-            Serial.println(id);
+            if(debug_app)
+            {
+                Serial.print("countSavedIDs: ");
+                Serial.println(id);
+            }
             count++;
         }
     }
